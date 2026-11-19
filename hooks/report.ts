@@ -122,7 +122,7 @@ async function summariesFor($: Engine, dates: string[], today: string) {
   return dates.map(date => ({ date, summary: summaries.get(date)! }))
 }
 
-async function currentDate($: Engine) {
+export async function currentDate($: Engine) {
   return localDate(await $.clock.now())
 }
 
@@ -132,8 +132,7 @@ export async function cachePastDays($: Engine) {
   await dropStaleKeys($, today)
 }
 
-export async function buildReport($: Engine, range: DateRange | null): Promise<Report> {
-  const today = await currentDate($)
+export async function buildReport($: Engine, today: string, range: DateRange | null): Promise<Report> {
   const days = await summariesFor($, range ? datesBetween(range.from, range.to) : lastDates(today, OVERVIEW_DAYS), today)
   await dropStaleKeys($, today)
   const focus = range ? mergeProjects(days.map(day => day.summary)) : days[days.length - 1]!.summary

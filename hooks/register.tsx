@@ -1,8 +1,7 @@
 import type { Register } from 'claude-code'
 
-import { localDate } from './dates'
 import { parseQuery } from './query'
-import { type Report, buildReport, cachePastDays } from './report'
+import { type Report, buildReport, cachePastDays, currentDate } from './report'
 import { plainText, renderReport } from './view'
 
 const COMMAND = 'loc'
@@ -27,9 +26,10 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: COMMAND }, async ($, e) => {
-    const query = parseQuery(String(e.args ?? ''), localDate(await $.clock.now()))
+    const today = await currentDate($)
+    const query = parseQuery(String(e.args ?? ''), today)
     if (query.kind === 'error') return { text: query.message, isTextDisplayOnly: true }
-    const report = await buildReport($, query.kind === 'range' ? query.range : null)
+    const report = await buildReport($, today, query.kind === 'range' ? query.range : null)
     const text = plainText(report)
     reports.set(text, report)
     return { text, isTextDisplayOnly: true }
