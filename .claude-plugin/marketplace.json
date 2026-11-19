@@ -1,0 +1,6 @@
+{
+  "name": "claude-loc",
+  "owner": { "name": "kukanggg89" },
+  "description": "The /loc mod for Claude Code: lines Claude wrote and removed, per day and per project.",
+  "plugins": [{ "name": "loc", "source": "./" }]
+}

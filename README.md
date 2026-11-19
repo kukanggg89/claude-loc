@@ -54,6 +54,22 @@ The "Lines accepted" figure on the Claude for Teams dashboard counts added plus 
 
 ## Install
 
+In a Claude Code session, run:
+
+```
+/plugin install loc --marketplace kukanggg89/claude-loc
+```
+
+Answer `y` to add the marketplace, then pick a scope. From a shell:
+
+```sh
+claude plugin install loc --marketplace kukanggg89/claude-loc
+```
+
+Start a new session and run `/loc`.
+
+### From a clone
+
 1. Clone the repository:
 
    ```sh
