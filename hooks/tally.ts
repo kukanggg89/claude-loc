@@ -4,14 +4,15 @@ export type Tally = { added: number; removed: number }
 export type CwdTallies = Map<string, Tally>
 export type DayTallies = Map<string, CwdTallies>
 export type Heredocs = Map<string, number>
-export type TallyScope = { wanted: Set<string>; seen: Set<string>; days: DayTallies }
+export type SeenResults = Map<string, string>
+export type TallyScope = { wanted: Set<string>; seen: SeenResults; days: DayTallies }
 
 type FileEditResult = { type?: unknown; content?: unknown; structuredPatch?: unknown; memdirStamped?: unknown }
 type Block = { type?: string; id?: string; name?: string; input?: { command?: unknown }; tool_use_id?: string; is_error?: boolean }
 type Entry = { type?: string; timestamp?: string; cwd?: string; message?: { content?: unknown }; toolUseResult?: unknown }
 
 const HEREDOC_TO_FILE = /\bcat\s+>>?\s*\S+\s*<<-?\s*['"]?(\w+)['"]?[^\n]*\n([\s\S]*?)\n[ \t]*\1[ \t]*(?=\n|$)/g
-const TIMESTAMP = /"timestamp":"([^"]+)"/
+const SEEN_KEY_LENGTH = 12
 
 export const ZERO: Tally = { added: 0, removed: 0 }
 
@@ -31,10 +32,7 @@ export const heredocLines = (command: string) => {
   return total
 }
 
-export const firstTimestampMs = (text: string) => {
-  const match = TIMESTAMP.exec(text)
-  return match?.[1] ? Date.parse(match[1]) : Number.POSITIVE_INFINITY
-}
+export const seenKey = (toolUseId: string) => toolUseId.slice(-SEEN_KEY_LENGTH)
 
 const patchTally = (hunks: { lines?: unknown }[]) => {
   const tally = { added: 0, removed: 0 }
@@ -57,8 +55,13 @@ export const fileEditTally = (result: FileEditResult): Tally | null => {
 
 const blocksOf = (entry: Entry): Block[] => (Array.isArray(entry.message?.content) ? (entry.message.content as Block[]) : [])
 
-const parseEntry = (line: string): Entry | null => {
-  if (!line.includes('"tool_')) return null
+const mayHoldHeredoc = (line: string) => line.includes('"tool_use"') && line.includes('<<')
+
+const mayHoldCountedResult = (line: string, heredocs: Heredocs) =>
+  line.includes('"tool_result"') && (line.includes('"structuredPatch"') || heredocs.size > 0)
+
+const parseEntry = (line: string, heredocs: Heredocs): Entry | null => {
+  if (!mayHoldHeredoc(line) && !mayHoldCountedResult(line, heredocs)) return null
   try {
     return JSON.parse(line) as Entry
   } catch {
@@ -94,17 +97,18 @@ const countResults = (entry: Entry, scope: TallyScope, heredocs: Heredocs) => {
   for (const block of blocksOf(entry)) {
     const id = block.tool_use_id
     if (block.type !== 'tool_result' || !id) continue
-    const tally = block.is_error || scope.seen.has(id) ? null : resultTally(id, entry, heredocs)
+    const key = seenKey(id)
+    const tally = block.is_error || scope.seen.has(key) ? null : resultTally(id, entry, heredocs)
     heredocs.delete(id)
     if (!tally || !scope.wanted.has(date)) continue
-    scope.seen.add(id)
+    scope.seen.set(key, date)
     addTo(scope.days, date, entry.cwd ?? '', tally)
   }
 }
 
 export const tallyTranscript = (text: string, scope: TallyScope, heredocs: Heredocs = new Map()) => {
   for (const line of text.split('\n')) {
-    const entry = parseEntry(line)
+    const entry = parseEntry(line, heredocs)
     if (entry?.type === 'assistant') rememberHeredocs(entry, heredocs)
     else if (entry?.type === 'user') countResults(entry, scope, heredocs)
   }

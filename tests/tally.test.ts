@@ -1,12 +1,12 @@
 import { expect, test } from 'claude-code/testing'
 
 import { lastDates, localDate } from '../hooks/dates'
-import { type TallyScope, fileEditTally, firstTimestampMs, heredocLines, tallyTranscript } from '../hooks/tally'
+import { type TallyScope, fileEditTally, heredocLines, tallyTranscript } from '../hooks/tally'
 import { completeLines, utf8Length } from '../hooks/transcripts'
 
 const line = (entry: object) => JSON.stringify(entry)
 const localNoon = (day: number) => new Date(2026, 10, day, 12).toISOString()
-const scopeFor = (...dates: string[]): TallyScope => ({ wanted: new Set(dates), seen: new Set(), days: new Map() })
+const scopeFor = (...dates: string[]): TallyScope => ({ wanted: new Set(dates), seen: new Map(), days: new Map() })
 const result = (id: string, timestamp: string, toolUseResult: object, isError = false) =>
   line({
     type: 'user',
@@ -73,11 +73,4 @@ test('an unfinished last line waits for the next read, measured in bytes', () =>
   expect(completeLines('{"a":1}\n{"b":"é')).toEqual({ lines: '{"a":1}\n', pendingBytes: 8 })
   expect(completeLines('{"a":1}\n')).toEqual({ lines: '{"a":1}\n', pendingBytes: 0 })
   expect(utf8Length('aé€😀')).toBe(1 + 2 + 3 + 4)
-})
-
-test('the first timestamp in a chunk marks how far back it reaches', () => {
-  expect(firstTimestampMs('x"timestamp":"2026-11-19T01:00:00Z"}\n{"timestamp":"2026-11-19T02:00:00Z"')).toBe(
-    Date.parse('2026-11-19T01:00:00Z'),
-  )
-  expect(firstTimestampMs('{"type":"summary"}')).toBe(Number.POSITIVE_INFINITY)
 })

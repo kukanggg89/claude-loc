@@ -1,10 +1,8 @@
 import type { EngineInterface as Engine } from 'claude-code'
 
-import { firstTimestampMs } from './tally'
-
 export type TranscriptFile = { path: string; size: number }
+export type ReadRange = (start: number, end: number) => Promise<string>
 
-const TAIL_CHUNK = 1024 * 1024
 const MAX_READ = 4 * 1024 * 1024
 const NO_FOLDER = '(no folder)'
 const SKIPPED_DIRS = new Set(['tool-results'])
@@ -57,18 +55,24 @@ export async function readRange($: Engine, path: string, start: number, end: num
   return text
 }
 
-export async function readTail($: Engine, file: TranscriptFile, sinceMs: number) {
-  const chunks: string[] = []
-  let end = file.size
-  while (end > 0) {
-    const start = Math.max(0, end - TAIL_CHUNK)
-    const chunk = await readRange($, file.path, start, end)
-    chunks.unshift(chunk)
-    end = start
-    if (firstTimestampMs(chunk) < sinceMs) break
+const readWholeLines = async (read: ReadRange, size: number, offset: number) => {
+  for (let length = MAX_READ; ; length *= 2) {
+    const end = Math.min(size, offset + length)
+    const text = await read(offset, end)
+    if (text.includes('\n') || end === size) return { text, end }
   }
-  const text = chunks.join('')
-  return end > 0 ? text.slice(text.indexOf('\n') + 1) : text
+}
+
+export const streamLines = async (read: ReadRange, size: number, start: number, onLines: (lines: string) => void) => {
+  let offset = start
+  while (offset < size) {
+    const { text, end } = await readWholeLines(read, size, offset)
+    const { lines, pendingBytes } = completeLines(text)
+    onLines(lines)
+    if (end === size) return end - pendingBytes
+    offset = Math.max(offset + 1, end - pendingBytes)
+  }
+  return offset
 }
 
 async function findGitRoot($: Engine, cwd: string) {

@@ -2,8 +2,8 @@ import type { EngineInterface as Engine } from 'claude-code'
 
 import { addDays, datesBetween, dayStartMs, lastDates, localDate } from './dates'
 import { type DateRange, HISTORY_DAYS } from './query'
-import { type CwdTallies, type DayTallies, type Tally, type TallyScope, ZERO, addTally, sumTallies, tallyTranscript } from './tally'
-import { type TranscriptFile, completeLines, listTranscripts, projectOf, projectsDir, readRange, readTail } from './transcripts'
+import { type CwdTallies, type DayTallies, type SeenResults, type Tally, type TallyScope, ZERO, addTally, sumTallies, tallyTranscript } from './tally'
+import { type TranscriptFile, listTranscripts, projectOf, projectsDir, readRange, streamLines } from './transcripts'
 
 export type ProjectTally = Tally & { project: string }
 export type DaySummary = Tally & { projects: ProjectTally[] }
@@ -11,18 +11,37 @@ export type DayEntry = { date: string; summary: DaySummary }
 export type Report = { today: string; range: DateRange | null; focus: DaySummary; days: DayEntry[] }
 
 type FileCursor = { offset: number; heredocs: Record<string, number> }
-type TodayScan = { date: string; files: Record<string, FileCursor>; seen: string[]; byCwd: Record<string, Tally> }
+type StoredIndex = {
+  files: Record<string, FileCursor>
+  days: Record<string, Record<string, Tally>>
+  seen: Record<string, string[]>
+}
 
 const OVERVIEW_DAYS = 7
-const DAY_PREFIX = 'day/v2/'
-const TODAY_SCAN_KEY = 'scan/v2/today'
+const INDEX_KEY = 'index/v3'
+const CHECKPOINT_MS = 3_000
 
-const dayKey = (date: string) => `${DAY_PREFIX}${date}`
+let refreshing: Promise<DayTallies> | null = null
 
-const emptyScan = (date: string): TodayScan => ({ date, files: {}, seen: [], byCwd: {} })
+const emptyIndex = (): StoredIndex => ({ files: {}, days: {}, seen: {} })
 
-const isUsableScan = (scan: TodayScan | undefined, date: string, files: TranscriptFile[]): scan is TodayScan =>
-  !!scan && scan.date === date && files.every(file => (scan.files[file.path]?.offset ?? 0) <= file.size)
+const isUsableIndex = (index: StoredIndex | undefined, files: TranscriptFile[]): index is StoredIndex =>
+  !!index?.files && files.every(file => (index.files[file.path]?.offset ?? 0) <= file.size)
+
+const daysFrom = (stored: StoredIndex['days']): DayTallies =>
+  new Map(Object.entries(stored).map(([date, byCwd]) => [date, new Map(Object.entries(byCwd))]))
+
+const seenFrom = (stored: StoredIndex['seen']): SeenResults =>
+  new Map(Object.entries(stored).flatMap(([date, keys]) => keys.map(key => [key, date] as const)))
+
+const daysToStore = (days: DayTallies, oldest: string) =>
+  Object.fromEntries([...days].filter(([date]) => date >= oldest).map(([date, byCwd]) => [date, Object.fromEntries(byCwd)]))
+
+const seenToStore = (seen: SeenResults, oldest: string) => {
+  const byDate: Record<string, string[]> = {}
+  for (const [key, date] of seen) if (date >= oldest) (byDate[date] ??= []).push(key)
+  return byDate
+}
 
 const byAddedDesc = (a: ProjectTally, b: ProjectTally) => b.added - a.added
 
@@ -46,95 +65,67 @@ async function summarize($: Engine, byCwd: CwdTallies | undefined) {
   return toSummary(byProject)
 }
 
-async function readCachedDays($: Engine, dates: string[]) {
-  const cached = new Map<string, DaySummary>()
-  for (const date of dates) {
-    const summary = (await $.store.get(dayKey(date))) as DaySummary | undefined
-    if (summary && Array.isArray(summary.projects)) cached.set(date, summary)
-  }
-  return cached
+async function dropOtherKeys($: Engine) {
+  for (const key of await $.store.keys()) if (key !== INDEX_KEY) await $.store.delete(key)
 }
 
-async function dropStaleKeys($: Engine, today: string) {
+async function saveIndex($: Engine, files: Record<string, FileCursor>, scope: TallyScope, oldest: string) {
+  const stored: StoredIndex = { files, days: daysToStore(scope.days, oldest), seen: seenToStore(scope.seen, oldest) }
+  await $.store.set(INDEX_KEY, stored)
+}
+
+async function indexFile($: Engine, file: TranscriptFile, cursor: FileCursor, scope: TallyScope): Promise<FileCursor> {
+  const heredocs = new Map(Object.entries(cursor.heredocs))
+  const read = (start: number, end: number) => readRange($, file.path, start, end)
+  const offset = await streamLines(read, file.size, cursor.offset, lines => tallyTranscript(lines, scope, heredocs)).catch(
+    () => cursor.offset,
+  )
+  return { offset, heredocs: Object.fromEntries(heredocs) }
+}
+
+async function updateIndex($: Engine, today: string) {
   const oldest = addDays(today, 1 - HISTORY_DAYS)
-  for (const key of await $.store.keys()) {
-    const isKeptDay = key.startsWith(DAY_PREFIX) && key.slice(DAY_PREFIX.length) >= oldest
-    if (!isKeptDay && key !== TODAY_SCAN_KEY) await $.store.delete(key)
-  }
-}
-
-async function scanPastDays($: Engine, dates: string[]) {
-  const summaries = await readCachedDays($, dates)
-  const missing = dates.filter(date => !summaries.has(date))
-  if (!missing.length) return summaries
-
-  const sinceMs = dayStartMs(missing[0]!)
-  const scope: TallyScope = { wanted: new Set(missing), seen: new Set(), days: new Map() }
-  for (const file of await listTranscripts($, await projectsDir($), sinceMs)) {
-    const text = await readTail($, file, sinceMs).catch(() => '')
-    tallyTranscript(completeLines(text).lines, scope)
-  }
-  for (const date of missing) {
-    const summary = await summarize($, scope.days.get(date))
-    summaries.set(date, summary)
-    await $.store.set(dayKey(date), summary)
-  }
-  return summaries
-}
-
-async function readNewText($: Engine, file: TranscriptFile, cursor: FileCursor | undefined, sinceMs: number) {
-  return cursor ? readRange($, file.path, cursor.offset, file.size) : readTail($, file, sinceMs)
-}
-
-async function scanToday($: Engine, today: string) {
-  const sinceMs = dayStartMs(today)
-  const files = await listTranscripts($, await projectsDir($), sinceMs)
-  const saved = (await $.store.get(TODAY_SCAN_KEY)) as TodayScan | undefined
-  const scan = isUsableScan(saved, today, files) ? saved : emptyScan(today)
-  const days: DayTallies = new Map([[today, new Map(Object.entries(scan.byCwd))]])
-  const scope: TallyScope = { wanted: new Set([today]), seen: new Set(scan.seen), days }
-  const cursors: Record<string, FileCursor> = {}
+  const files = await listTranscripts($, await projectsDir($), dayStartMs(oldest))
+  const saved = (await $.store.get(INDEX_KEY)) as StoredIndex | undefined
+  const index = isUsableIndex(saved, files) ? saved : emptyIndex()
+  const scope = { wanted: new Set(datesBetween(oldest, today)), seen: seenFrom(index.seen), days: daysFrom(index.days) }
+  const cursors = Object.fromEntries(files.flatMap(file => (index.files[file.path] ? [[file.path, index.files[file.path]!]] : [])))
+  let savedAt = await $.clock.now()
 
   for (const file of files) {
-    const cursor = scan.files[file.path]
-    if (cursor?.offset === file.size) {
-      cursors[file.path] = cursor
-      continue
-    }
-    try {
-      const { lines, pendingBytes } = completeLines(await readNewText($, file, cursor, sinceMs))
-      const heredocs = new Map(Object.entries(cursor?.heredocs ?? {}))
-      tallyTranscript(lines, scope, heredocs)
-      cursors[file.path] = { offset: file.size - pendingBytes, heredocs: Object.fromEntries(heredocs) }
-    } catch {
-      if (cursor) cursors[file.path] = cursor
-    }
+    const cursor = cursors[file.path] ?? { offset: 0, heredocs: {} }
+    if (cursor.offset === file.size) continue
+    cursors[file.path] = await indexFile($, file, cursor, scope)
+    if ((await $.clock.now()) - savedAt < CHECKPOINT_MS) continue
+    await saveIndex($, cursors, scope, oldest)
+    savedAt = await $.clock.now()
   }
 
-  const byCwd = scope.days.get(today) ?? new Map<string, Tally>()
-  await $.store.set(TODAY_SCAN_KEY, { date: today, files: cursors, seen: [...scope.seen], byCwd: Object.fromEntries(byCwd) })
-  return summarize($, byCwd)
+  await saveIndex($, cursors, scope, oldest)
+  await dropOtherKeys($)
+  return scope.days
 }
 
-async function summariesFor($: Engine, dates: string[], today: string) {
-  const summaries = await scanPastDays($, dates.filter(date => date !== today))
-  if (dates.includes(today)) summaries.set(today, await scanToday($, today))
-  return dates.map(date => ({ date, summary: summaries.get(date)! }))
+function refreshIndex($: Engine, today: string) {
+  refreshing ??= updateIndex($, today).finally(() => {
+    refreshing = null
+  })
+  return refreshing
 }
 
 export async function currentDate($: Engine) {
   return localDate(await $.clock.now())
 }
 
-export async function cachePastDays($: Engine) {
-  const today = await currentDate($)
-  await scanPastDays($, lastDates(addDays(today, -1), OVERVIEW_DAYS - 1))
-  await dropStaleKeys($, today)
+export async function warmIndex($: Engine) {
+  await refreshIndex($, await currentDate($))
 }
 
 export async function buildReport($: Engine, today: string, range: DateRange | null): Promise<Report> {
-  const days = await summariesFor($, range ? datesBetween(range.from, range.to) : lastDates(today, OVERVIEW_DAYS), today)
-  await dropStaleKeys($, today)
+  const tallies = await refreshIndex($, today)
+  const dates = range ? datesBetween(range.from, range.to) : lastDates(today, OVERVIEW_DAYS)
+  const days: DayEntry[] = []
+  for (const date of dates) days.push({ date, summary: await summarize($, tallies.get(date)) })
   const focus = range ? mergeProjects(days.map(day => day.summary)) : days[days.length - 1]!.summary
   return { today, range, focus, days }
 }

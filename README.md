@@ -31,6 +31,8 @@ Added lines show in green and removed lines in red.
 
 Dates go back up to 30 days. Days follow your computer's time zone.
 
+The first session after installing reads the last 30 days of history in the background. If you run `/loc` before it finishes, you'll be asked to try again in a moment. After that, each run reads only what was added since the last one.
+
 ## What counts
 
 - Lines added and removed by the Write and Edit tools, measured as a diff. A changed line counts as one added and one removed.
@@ -76,7 +78,7 @@ To try it for one session without changing settings, run `claude --plugin-dir /p
 
 ## Privacy
 
-The mod reads the session transcripts Claude Code already stores in `~/.claude/projects` (or under `CLAUDE_CONFIG_DIR`) and keeps a small cache of daily totals in the mod's own store. It makes no network requests.
+The mod reads the session transcripts Claude Code already stores in `~/.claude/projects` (or under `CLAUDE_CONFIG_DIR`) and keeps a small index of daily totals in the mod's own store. It makes no network requests.
 
 ## Development
 
@@ -89,7 +91,7 @@ The code lives in `hooks/`:
 
 - `tally.ts` parses transcript lines into added and removed counts.
 - `transcripts.ts` lists and reads transcript files.
-- `report.ts` builds daily totals, caches past days, and reads today's files incrementally.
+- `report.ts` keeps a 30-day index of daily totals and reads only the bytes each transcript gained since the last run.
 - `query.ts` parses the date argument.
 - `view.tsx` draws the table and the plain-text fallback.
 - `register.tsx` wires the `/loc` command.
