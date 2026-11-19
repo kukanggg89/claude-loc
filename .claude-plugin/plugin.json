@@ -1,0 +1,6 @@
+{
+  "name": "loc",
+  "version": "0.1.0",
+  "description": "See how many lines Claude Code wrote and removed, per day and per project, from your local session history.",
+  "license": "MIT"
+}
