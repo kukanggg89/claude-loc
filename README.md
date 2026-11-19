@@ -57,7 +57,7 @@ The "Lines accepted" figure on the Claude for Teams dashboard counts added plus 
 1. Clone the repository:
 
    ```sh
-   git clone https://github.com/<owner>/claude-loc.git
+   git clone https://github.com/kukanggg89/claude-loc.git
    ```
 
 2. Add the folder to `CLAUDE_CODE_PLUGIN_DIRS` in the `env` block of `~/.claude/settings.json`, using an absolute path:
